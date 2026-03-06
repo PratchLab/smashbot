@@ -33,8 +33,18 @@ def handle_message(event):
     user_id = event.source.user_id
 
     try:
-        profile = line_bot_api.get_profile(user_id)
-        name = profile.display_name
+        source_type = event.source.type
+        if source_type == "group":
+            group_id = event.source.group_id
+            member = line_bot_api.get_group_member_profile(group_id, user_id)
+            name = member.display_name
+        elif source_type == "room":
+            room_id = event.source.room_id
+            member = line_bot_api.get_room_member_profile(room_id, user_id)
+            name = member.display_name
+        else:
+            profile = line_bot_api.get_profile(user_id)
+            name = profile.display_name
     except:
         name = "ไม่ทราบชื่อ"
 
@@ -77,3 +87,4 @@ def handle_message(event):
         event.reply_token,
         TextSendMessage(text=reply)
     )
+
