@@ -38,8 +38,7 @@ def save_data(data):
 def get_next_thursday():
     now = datetime.now(THAILAND_TZ)
     days_ahead = (3 - now.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
+    # ถ้าวันนี้เป็นพฤหัส (days_ahead == 0) ให้ใช้วันนี้เลย
     next_thu = now + timedelta(days=days_ahead)
     return f"{next_thu.day} {THAI_MONTHS[next_thu.month]}"
 
