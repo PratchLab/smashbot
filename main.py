@@ -41,61 +41,23 @@ def get_next_thursday():
     next_thu = now + timedelta(days=days_ahead)
     return f"{next_thu.day} {THAI_MONTHS[next_thu.month]}"
 
-def parse_single_line(line):
-    """
-    แยกคำสั่งและชื่อจากบรรทัดเดียว
-    รองรับ: "ไป", "ไป ชื่อ", "ชื่อ ไป", "ไม่ไป", "ไม่ไป ชื่อ", "ชื่อ ไม่ไป"
-    คืนค่า: (action, proxy_name) หรือ (None, None)
-    """
-    t = line.strip()
-    if not t:
-        return (None, None)
-    t_lower = t.lower()
-
-    # คำสั่งเดี่ยวไม่มีชื่อ
-    if t_lower in ["ไป", "+", "in"]:
-        return ("ไป", None)
-    if t_lower in ["ไม่ไป", "-", "out"]:
-        return ("ไม่ไป", None)
-    if t_lower in ["ใคร", "รายชื่อ", "list"]:
-        return ("ใคร", None)
-    if t_lower in ["เคลียร์", "clear", "reset"]:
-        return ("เคลียร์", None)
-    if t_lower in ["help", "ช่วยเหลือ", "?"]:
-        return ("help", None)
-
-    # "ไป ชื่อ" หรือ "ไม่ไป ชื่อ"
-    if t_lower.startswith("ไป "):
-        return ("ไป", t[3:].strip())
-    if t_lower.startswith("ไม่ไป "):
-        return ("ไม่ไป", t[6:].strip())
-
-    # "ชื่อ ไป" หรือ "ชื่อ ไม่ไป"
-    parts = t.rsplit(" ", 1)
-    if len(parts) == 2:
-        name_part, cmd_part = parts[0].strip(), parts[1].strip().lower()
-        if cmd_part in ["ไป", "+"]:
-            return ("ไป", name_part)
-        if cmd_part in ["ไม่ไป", "-"]:
-            return ("ไม่ไป", name_part)
-
-    return (None, None)
-
+# ทุกวันพุธ 8:00 น. — ส่งข้อความชวนตีแบด
 def send_wednesday_invite():
     data = load_data()
     msg = ("🏸 สวัสดีตอนเช้า!\n"
            "พรุ่งนี้พฤหัสแล้ว มาตีแบดกันนะ 💪\n\n"
            "พิมพ์ ไป → ลงชื่อตัวเอง\n"
-           "พิมพ์ ไป ตุ๊ก หรือ ตุ๊ก ไป → ลงชื่อแทน\n"
-           "ลงหลายคนพร้อมกันได้:\n"
-           "AA ไป\nBB ไป\nCC ไป\n"
+           "พิมพ์ ตุ๊ก ไป หรือ ไป ตุ๊ก → ลงชื่อแทน\n"
+           "พิมพ์ AA,BB ไป → ลงหลายคนพร้อมกัน\n"
            "พิมพ์ ใคร → ดูรายชื่อ")
     for gid in data["group_ids"]:
         try:
             line_bot_api.push_message(gid, TextSendMessage(text=msg))
+            print(f"[Invite] Sent to {gid}")
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"[Invite] Error {gid}: {e}")
 
+# ทุกวันพฤหัส 22:00 น. — ล้างรายชื่อ
 def reset_thursday():
     data = load_data()
     count = len(data["players"])
@@ -105,18 +67,27 @@ def reset_thursday():
     for gid in data["group_ids"]:
         try:
             line_bot_api.push_message(gid, TextSendMessage(text=msg))
+            print(f"[Reset] Sent to {gid}")
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"[Reset] Error {gid}: {e}")
 
 scheduler = BackgroundScheduler(timezone=THAILAND_TZ)
 scheduler.add_job(send_wednesday_invite, CronTrigger(day_of_week="wed", hour=8, minute=0, timezone=THAILAND_TZ))
 scheduler.add_job(reset_thursday, CronTrigger(day_of_week="thu", hour=22, minute=0, timezone=THAILAND_TZ))
 scheduler.start()
+print("[Scheduler] Started — Wed 08:00 invite, Thu 22:00 reset")
 
 @app.get("/")
 def root():
     data = load_data()
-    return {"status": "Badminton Bot is running!", "players": len(data["players"])}
+    now = datetime.now(THAILAND_TZ)
+    jobs = [{"id": j.id, "next_run": str(j.next_run_time)} for j in scheduler.get_jobs()]
+    return {
+        "status": "running",
+        "players": len(data["players"]),
+        "time_bangkok": now.strftime("%Y-%m-%d %H:%M %Z"),
+        "scheduler_jobs": jobs
+    }
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -128,21 +99,84 @@ async def webhook(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     return "OK"
 
+def expand_names(raw):
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+def parse_single_line(line):
+    t = line.strip()
+    if not t:
+        return (None, [])
+    t_lower = t.lower()
+
+    if t_lower in ["ไป", "+", "in"]:
+        return ("ไป", [])
+    if t_lower in ["ไม่ไป", "-", "out"]:
+        return ("ไม่ไป", [])
+    if t_lower in ["ใคร", "รายชื่อ", "list"]:
+        return ("ใคร", [])
+    if t_lower in ["เคลียร์", "clear", "reset"]:
+        return ("เคลียร์", [])
+    if t_lower in ["help", "ช่วยเหลือ", "?"]:
+        return ("help", [])
+
+    if t_lower.startswith("ไป "):
+        return ("ไป", expand_names(t[3:]))
+    if t_lower.startswith("ไม่ไป "):
+        return ("ไม่ไป", expand_names(t[6:]))
+
+    parts = t.rsplit(" ", 1)
+    if len(parts) == 2:
+        name_part, cmd = parts[0].strip(), parts[1].strip().lower()
+        if cmd in ["ไป", "+"]:
+            return ("ไป", expand_names(name_part))
+        if cmd in ["ไม่ไป", "-"]:
+            return ("ไม่ไป", expand_names(name_part))
+
+    return (None, [])
+
+def process_action(action, names, user_id, sender_name, data):
+    added, removed, already, not_found = [], [], [], []
+    players = data["players"]
+
+    if action == "ไป":
+        targets = names if names else [None]
+        for name in targets:
+            display = name if name else sender_name
+            pid = f"proxy_{display}" if name else user_id
+            if not any(p["name"].lower() == display.lower() for p in players):
+                players.append({"id": pid, "name": display})
+                added.append(display)
+            else:
+                already.append(display)
+
+    elif action == "ไม่ไป":
+        targets = names if names else [None]
+        for name in targets:
+            display = name if name else sender_name
+            before = len(data["players"])
+            if name:
+                data["players"] = [p for p in data["players"] if p["name"].lower() != display.lower()]
+            else:
+                data["players"] = [p for p in data["players"] if p["id"] != user_id]
+            if len(data["players"]) < before:
+                removed.append(display)
+            else:
+                not_found.append(display)
+
+    return added, removed, already, not_found
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
     user_id = event.source.user_id
-
     data = load_data()
 
-    # เก็บ group_id อัตโนมัติ
     if event.source.type == "group":
         gid = event.source.group_id
         if gid not in data["group_ids"]:
             data["group_ids"].append(gid)
             save_data(data)
 
-    # ดึงชื่อผู้ส่ง
     try:
         if event.source.type == "group":
             member = line_bot_api.get_group_member_profile(event.source.group_id, user_id)
@@ -157,133 +191,63 @@ def handle_message(event):
         sender_name = "ไม่ทราบชื่อ"
 
     thu_label = get_next_thursday()
-    players = data["players"]
-
-    # แยกข้อความเป็นบรรทัด รองรับทั้งหลายบรรทัดและบรรทัดเดียว
     lines = text.splitlines()
-    
-    # วิเคราะห์แต่ละบรรทัด
-    parsed_lines = [(parse_single_line(line), line.strip()) for line in lines]
-    valid_commands = [(action, proxy, raw) for (action, proxy), raw in parsed_lines if action is not None]
+    valid = [(a, n) for a, n in [parse_single_line(l) for l in lines] if a is not None]
 
-    # ถ้าไม่มีคำสั่งที่รู้จักเลย ไม่ตอบ
-    if not valid_commands:
+    if not valid:
         return
 
-    # ถ้ามีแค่บรรทัดเดียว ใช้ logic เดิม (ตอบแบบ single)
-    if len(valid_commands) == 1:
-        action, proxy_name, _ = valid_commands[0]
+    first_action = valid[0][0]
 
-        # คำสั่งพิเศษที่ไม่เกี่ยวกับลงชื่อ
-        if action == "ใคร":
-            if players:
-                names = "\n".join([f"{i+1}. {p['name']}" for i, p in enumerate(players)])
-                reply = f"🏸 พฤหัส {thu_label} มี {len(players)} คน:\n{names}"
-            else:
-                reply = "ยังไม่มีใครลงชื่อเลย 😅"
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-            return
-
-        if action == "เคลียร์":
-            data["players"] = []
-            save_data(data)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🗑️ เคลียร์รายชื่อแล้ว!"))
-            return
-
-        if action == "help":
-            reply = ("🏸 คำสั่ง Bot ตีแบด:\n"
-                     "ไป → ลงชื่อตัวเอง\n"
-                     "ไป ตุ๊ก / ตุ๊ก ไป → ลงชื่อแทน\n"
-                     "ไม่ไป → ถอนชื่อตัวเอง\n"
-                     "ไม่ไป ตุ๊ก / ตุ๊ก ไม่ไป → ถอนชื่อแทน\n"
-                     "ลงหลายคนพร้อมกัน:\nAA ไป\nBB ไป\n"
-                     "ใคร / รายชื่อ → ดูรายชื่อ\n"
-                     "เคลียร์ → ล้างรายชื่อ")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-            return
-
-        if action == "ไป":
-            if proxy_name:
-                if not any(p["name"].lower() == proxy_name.lower() for p in players):
-                    players.append({"id": f"proxy_{proxy_name}", "name": proxy_name})
-                    save_data(data)
-                    reply = f"✅ ลงชื่อ {proxy_name} แทนแล้ว (โดย {sender_name})\n🏸 พฤหัส {thu_label} ตอนนี้มี {len(players)} คน"
-                else:
-                    reply = f"⚠️ {proxy_name} ลงชื่อไว้แล้วนะ!"
-            else:
-                if not any(p["id"] == user_id for p in players):
-                    players.append({"id": user_id, "name": sender_name})
-                    save_data(data)
-                    reply = f"✅ {sender_name} ลงชื่อแล้ว!\n🏸 พฤหัส {thu_label} ตอนนี้มี {len(players)} คน"
-                else:
-                    reply = f"⚠️ {sender_name} ลงชื่อไว้แล้วนะ!"
-
-        elif action == "ไม่ไป":
-            if proxy_name:
-                before = len(players)
-                data["players"] = [p for p in players if p["name"].lower() != proxy_name.lower()]
-                if len(data["players"]) < before:
-                    save_data(data)
-                    reply = f"❌ ถอนชื่อ {proxy_name} แล้ว (โดย {sender_name})\n🏸 เหลือ {len(data['players'])} คน"
-                else:
-                    reply = f"ไม่พบชื่อ {proxy_name} ในรายชื่อ"
-            else:
-                before = len(players)
-                data["players"] = [p for p in players if p["id"] != user_id]
-                if len(data["players"]) < before:
-                    save_data(data)
-                    reply = f"❌ {sender_name} ถอนชื่อแล้ว\n🏸 เหลือ {len(data['players'])} คน"
-                else:
-                    reply = f"ยังไม่ได้ลงชื่อเลยนะ {sender_name}"
-
+    if first_action == "ใคร":
+        players = data["players"]
+        if players:
+            names_str = "\n".join([f"{i+1}. {p['name']}" for i, p in enumerate(players)])
+            reply = f"🏸 พฤหัส {thu_label} มี {len(players)} คน:\n{names_str}"
+        else:
+            reply = "ยังไม่มีใครลงชื่อเลย 😅"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
         return
 
-    # === หลายบรรทัด: ประมวลผลทีเดียว ===
-    added = []
-    removed = []
-    already = []
-    not_found = []
+    if first_action == "เคลียร์":
+        data["players"] = []
+        save_data(data)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🗑️ เคลียร์รายชื่อแล้ว!"))
+        return
 
-    for action, proxy_name, raw in valid_commands:
-        if action == "ไป":
-            name = proxy_name if proxy_name else sender_name
-            pid = f"proxy_{name}" if proxy_name else user_id
-            # reload players ทุกครั้งเพราะอาจมีการเปลี่ยนแปลง
-            players = data["players"]
-            if not any(p["name"].lower() == name.lower() for p in players):
-                players.append({"id": pid, "name": name})
-                added.append(name)
-            else:
-                already.append(name)
+    if first_action == "help":
+        reply = ("🏸 คำสั่ง SmashBot:\n"
+                 "ไป → ลงชื่อตัวเอง\n"
+                 "ตุ๊ก ไป / ไป ตุ๊ก → ลงชื่อแทน\n"
+                 "AA,BB ไป → ลงหลายคนพร้อมกัน\n"
+                 "ไม่ไป → ถอนชื่อตัวเอง\n"
+                 "ตุ๊ก ไม่ไป / AA,BB ไม่ไป → ถอนชื่อแทน\n"
+                 "ใคร / รายชื่อ → ดูรายชื่อ\n"
+                 "เคลียร์ → ล้างรายชื่อ")
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        return
 
-        elif action == "ไม่ไป":
-            name = proxy_name if proxy_name else sender_name
-            players = data["players"]
-            before = len(players)
-            if proxy_name:
-                data["players"] = [p for p in players if p["name"].lower() != name.lower()]
-            else:
-                data["players"] = [p for p in players if p["id"] != user_id]
-            if len(data["players"]) < before:
-                removed.append(name)
-            else:
-                not_found.append(name)
+    all_added, all_removed, all_already, all_not_found = [], [], [], []
+    for action, names in valid:
+        if action not in ["ไป", "ไม่ไป"]:
+            continue
+        a, r, al, nf = process_action(action, names, user_id, sender_name, data)
+        all_added += a
+        all_removed += r
+        all_already += al
+        all_not_found += nf
 
     save_data(data)
-    players = data["players"]
 
-    # สร้างข้อความตอบกลับ
-    reply_parts = []
-    if added:
-        reply_parts.append("✅ ลงชื่อแล้ว: " + ", ".join(added))
-    if removed:
-        reply_parts.append("❌ ถอนชื่อแล้ว: " + ", ".join(removed))
-    if already:
-        reply_parts.append("⚠️ ลงชื่อไว้แล้ว: " + ", ".join(already))
-    if not_found:
-        reply_parts.append("❓ ไม่พบในรายชื่อ: " + ", ".join(not_found))
+    parts = []
+    if all_added:
+        parts.append("✅ ลงชื่อแล้ว: " + ", ".join(all_added))
+    if all_removed:
+        parts.append("❌ ถอนชื่อแล้ว: " + ", ".join(all_removed))
+    if all_already:
+        parts.append("⚠️ ลงชื่อไว้แล้ว: " + ", ".join(all_already))
+    if all_not_found:
+        parts.append("❓ ไม่พบในรายชื่อ: " + ", ".join(all_not_found))
+    parts.append(f"🏸 พฤหัส {thu_label} ตอนนี้มี {len(data['players'])} คน")
 
-    reply_parts.append(f"🏸 พฤหัส {thu_label} ตอนนี้มี {len(players)} คน")
-
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="\n".join(reply_parts)))
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="\n".join(parts)))
