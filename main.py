@@ -89,6 +89,28 @@ def root():
         "scheduler_jobs": jobs
     }
 
+# endpoint ดูข้อมูล
+@app.get("/data")
+def view_data():
+    data = load_data()
+    return {
+        "players": data["players"],
+        "total": len(data["players"]),
+        "group_ids": data["group_ids"],
+        "next_thursday": get_next_thursday()
+    }
+
+# endpoint ทดสอบ — trigger ด้วยตัวเองได้ทุกเวลา
+@app.get("/test/invite")
+def test_invite():
+    send_wednesday_invite()
+    return {"status": "sent invite message"}
+
+@app.get("/test/reset")
+def test_reset():
+    reset_thursday()
+    return {"status": "reset done"}
+
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
