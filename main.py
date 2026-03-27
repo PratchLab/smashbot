@@ -6,11 +6,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
 from datetime import datetime, timedelta
+import urllib.request
+import urllib.error
 
 app = FastAPI()
 
 LINE_TOKEN = os.environ.get("LINE_TOKEN")
 LINE_SECRET = os.environ.get("LINE_SECRET")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 line_bot_api = LineBotApi(LINE_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
@@ -41,7 +44,6 @@ def get_next_thursday():
     next_thu = now + timedelta(days=days_ahead)
     return f"{next_thu.day} {THAI_MONTHS[next_thu.month]}"
 
-# ทุกวันพุธ 8:00 น. — ส่งข้อความชวนตีแบด
 def send_wednesday_invite():
     data = load_data()
     msg = ("🏸 สวัสดีตอนเช้า!\n"
@@ -57,7 +59,6 @@ def send_wednesday_invite():
         except Exception as e:
             print(f"[Invite] Error {gid}: {e}")
 
-# ทุกวันพฤหัส 22:00 น. — ล้างรายชื่อ
 def reset_thursday():
     data = load_data()
     count = len(data["players"])
@@ -86,10 +87,10 @@ def root():
         "status": "running",
         "players": len(data["players"]),
         "time_bangkok": now.strftime("%Y-%m-%d %H:%M %Z"),
-        "scheduler_jobs": jobs
+        "scheduler_jobs": jobs,
+        "ai_enabled": bool(ANTHROPIC_API_KEY)
     }
 
-# endpoint ดูข้อมูล
 @app.get("/data")
 def view_data():
     data = load_data()
@@ -100,7 +101,6 @@ def view_data():
         "next_thursday": get_next_thursday()
     }
 
-# endpoint ทดสอบ — trigger ด้วยตัวเองได้ทุกเวลา
 @app.get("/test/invite")
 def test_invite():
     send_wednesday_invite()
@@ -121,11 +121,12 @@ async def webhook(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     return "OK"
 
+# ==================== PARSE FUNCTIONS ====================
+
 def expand_names(raw):
     return [n.strip() for n in raw.split(",") if n.strip()]
 
 def parse_with_rules(line):
-    """Rule-based parser สำหรับคำสั่งชัดเจน"""
     t = line.strip()
     if not t:
         return (None, [])
@@ -133,7 +134,9 @@ def parse_with_rules(line):
 
     if t_lower in ["ไป", "+", "in"]:
         return ("ไป", [])
-    if t_lower in ["ไม่ไป", "-", "out"]:
+    if t_lower in ["ไม่ไป", "-", "out",
+                   "ไม่ไปละ", "ไม่ไปนะ", "ไม่ไปแล้ว", "ไม่ไปด้วย",
+                   "ไปไม่ได้", "ไปไม่ได้ครับ", "ไปไม่ได้ค่ะ"]:
         return ("ไม่ไป", [])
     if t_lower in ["ใคร", "รายชื่อ", "list"]:
         return ("ใคร", [])
@@ -155,38 +158,33 @@ def parse_with_rules(line):
         if cmd in ["ไม่ไป", "-"]:
             return ("ไม่ไป", expand_names(name_part))
 
-    return (None, [])  # ไม่รู้จักคำสั่ง ส่งให้ AI ต่อ
+    return (None, [])
 
-def parse_with_ai(full_text):
-    """ใช้ Claude วิเคราะห์ข้อความที่ rule-based ไม่เข้าใจ"""
-    import urllib.request
-    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+def parse_with_ai(text):
     if not ANTHROPIC_API_KEY:
         return None
 
-    system_prompt = """คุณคือผู้ช่วยวิเคราะห์ข้อความสำหรับระบบลงชื่อตีแบดมินตัน
-วิเคราะห์ข้อความและตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น
-
-รูปแบบ JSON ที่ต้องตอบ:
-{
-  "action": "ไป" หรือ "ไม่ไป" หรือ "ใคร" หรือ "เคลียร์" หรือ "help" หรือ null,
-  "names": ["ชื่อ1", "ชื่อ2"] หรือ [] ถ้าลงชื่อตัวเอง
-}
-
-กฎ:
-- ถ้าข้อความแสดงความต้องการมาร่วม เช่น "ไปด้วย" "อยากไป" "ขอร่วมด้วย" "นับด้วยคน" = action: "ไป"
-- ถ้าข้อความแสดงว่าไม่มา เช่น "ไม่ว่าง" "ติดธุระ" "ไปไม่ได้" "ขอพักสัปดาห์นี้" = action: "ไม่ไป"  
-- ถ้าถามว่ามีใครบ้าง เช่น "ใครบ้าง" "มีกี่คน" "ใครมาบ้าง" = action: "ใคร"
-- ถ้าข้อความไม่เกี่ยวกับการลงชื่อเลย = action: null
-- ถ้ามีชื่อคนในข้อความให้ใส่ใน names เช่น "พาตุ๊กไปด้วย" = names: ["ตุ๊ก"]
-- ถ้าลงชื่อตัวเองให้ names เป็น []"""
+    prompt = (
+        "วิเคราะห์ข้อความนี้ว่าเกี่ยวกับการลงชื่อตีแบดมินตันไหม\n"
+        "ตอบ JSON เท่านั้น: {action: ไป/ไม่ไป/ใคร/null, names: []}\n\n"
+        "ตัวอย่าง:\n"
+        "ไปด้วย -> {action:ไป,names:[]}\n"
+        "อยากไป -> {action:ไป,names:[]}\n"
+        "ไปได้นะ -> {action:ไป,names:[]}\n"
+        "ไปก็ได้ -> {action:ไป,names:[]}\n"
+        "ไม่ว่าง -> {action:ไม่ไป,names:[]}\n"
+        "ไปไม่ได้ -> {action:ไม่ไป,names:[]}\n"
+        "ติดธุระ -> {action:ไม่ไป,names:[]}\n"
+        "อาหารอร่อย -> {action:null,names:[]}\n"
+        "พาตุ๊กไปด้วย -> {action:ไป,names:[ตุ๊ก]}\n\n"
+        f"ข้อความ: {text}"
+    )
 
     payload = json.dumps({
         "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 200,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": full_text}]
-    }).encode()
+        "max_tokens": 60,
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode("utf-8")
 
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
@@ -195,31 +193,48 @@ def parse_with_ai(full_text):
             "x-api-key": ANTHROPIC_API_KEY,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
-        }
+        },
+        method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            result = json.loads(resp.read())
-            text = result["content"][0]["text"].strip()
-            parsed = json.loads(text)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            raw_text = ""
+            for block in result.get("content", []):
+                if block.get("type") == "text":
+                    raw_text = block["text"].strip()
+                    break
+            if not raw_text or raw_text in ["null", "None"]:
+                return (None, [])
+            # หา JSON object ใน response
+            start_j = raw_text.find("{")
+            end_j = raw_text.rfind("}") + 1
+            if start_j >= 0 and end_j > start_j:
+                raw_text = raw_text[start_j:end_j]
+            else:
+                return (None, [])
+            parsed = json.loads(raw_text)
             action = parsed.get("action")
             names = parsed.get("names", [])
+            print(f"[AI] {text!r} -> action={action} names={names}")
             if action in ["ไป", "ไม่ไป", "ใคร", "เคลียร์", "help", None]:
                 return (action, names)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8")
+        print(f"[AI] HTTPError {e.code}: {body[:200]}")
     except Exception as e:
-        print(f"[AI] Error: {e}")
+        print(f"[AI] Error: {type(e).__name__}: {e}")
     return None
-
 def parse_single_line(line):
-    """ลอง rule-based ก่อน ถ้าไม่รู้จักค่อยใช้ AI"""
     result = parse_with_rules(line)
     if result[0] is not None:
         return result
-    # ส่งให้ AI วิเคราะห์
     ai_result = parse_with_ai(line)
     if ai_result:
         return ai_result
     return (None, [])
+
+# ==================== PROCESS ACTION ====================
 
 def process_action(action, names, user_id, sender_name, data):
     added, removed, already, not_found = [], [], [], []
@@ -251,6 +266,8 @@ def process_action(action, names, user_id, sender_name, data):
                 not_found.append(display)
 
     return added, removed, already, not_found
+
+# ==================== HANDLER ====================
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
