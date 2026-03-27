@@ -124,7 +124,8 @@ async def webhook(request: Request):
 def expand_names(raw):
     return [n.strip() for n in raw.split(",") if n.strip()]
 
-def parse_single_line(line):
+def parse_with_rules(line):
+    """Rule-based parser สำหรับคำสั่งชัดเจน"""
     t = line.strip()
     if not t:
         return (None, [])
@@ -154,6 +155,70 @@ def parse_single_line(line):
         if cmd in ["ไม่ไป", "-"]:
             return ("ไม่ไป", expand_names(name_part))
 
+    return (None, [])  # ไม่รู้จักคำสั่ง ส่งให้ AI ต่อ
+
+def parse_with_ai(full_text):
+    """ใช้ Claude วิเคราะห์ข้อความที่ rule-based ไม่เข้าใจ"""
+    import urllib.request
+    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    system_prompt = """คุณคือผู้ช่วยวิเคราะห์ข้อความสำหรับระบบลงชื่อตีแบดมินตัน
+วิเคราะห์ข้อความและตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น
+
+รูปแบบ JSON ที่ต้องตอบ:
+{
+  "action": "ไป" หรือ "ไม่ไป" หรือ "ใคร" หรือ "เคลียร์" หรือ "help" หรือ null,
+  "names": ["ชื่อ1", "ชื่อ2"] หรือ [] ถ้าลงชื่อตัวเอง
+}
+
+กฎ:
+- ถ้าข้อความแสดงความต้องการมาร่วม เช่น "ไปด้วย" "อยากไป" "ขอร่วมด้วย" "นับด้วยคน" = action: "ไป"
+- ถ้าข้อความแสดงว่าไม่มา เช่น "ไม่ว่าง" "ติดธุระ" "ไปไม่ได้" "ขอพักสัปดาห์นี้" = action: "ไม่ไป"  
+- ถ้าถามว่ามีใครบ้าง เช่น "ใครบ้าง" "มีกี่คน" "ใครมาบ้าง" = action: "ใคร"
+- ถ้าข้อความไม่เกี่ยวกับการลงชื่อเลย = action: null
+- ถ้ามีชื่อคนในข้อความให้ใส่ใน names เช่น "พาตุ๊กไปด้วย" = names: ["ตุ๊ก"]
+- ถ้าลงชื่อตัวเองให้ names เป็น []"""
+
+    payload = json.dumps({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 200,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": full_text}]
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            result = json.loads(resp.read())
+            text = result["content"][0]["text"].strip()
+            parsed = json.loads(text)
+            action = parsed.get("action")
+            names = parsed.get("names", [])
+            if action in ["ไป", "ไม่ไป", "ใคร", "เคลียร์", "help", None]:
+                return (action, names)
+    except Exception as e:
+        print(f"[AI] Error: {e}")
+    return None
+
+def parse_single_line(line):
+    """ลอง rule-based ก่อน ถ้าไม่รู้จักค่อยใช้ AI"""
+    result = parse_with_rules(line)
+    if result[0] is not None:
+        return result
+    # ส่งให้ AI วิเคราะห์
+    ai_result = parse_with_ai(line)
+    if ai_result:
+        return ai_result
     return (None, [])
 
 def process_action(action, names, user_id, sender_name, data):
