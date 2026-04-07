@@ -32,7 +32,7 @@ def load_data():
         with open(DATA_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"players": [], "group_ids": []}
+        return {"players": [], "group_ids": [], "last_invite_date": "", "last_reset_date": ""}
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
@@ -77,6 +77,28 @@ scheduler.add_job(send_wednesday_invite, CronTrigger(day_of_week="wed", hour=8, 
 scheduler.add_job(reset_thursday, CronTrigger(day_of_week="thu", hour=22, minute=0, timezone=THAILAND_TZ))
 scheduler.start()
 print("[Scheduler] Started — Wed 08:00 invite, Thu 22:00 reset")
+
+# ตรวจสอบตอน startup: ถ้าพลาด job ไปให้รันทันที
+def check_missed_jobs():
+    now = datetime.now(THAILAND_TZ)
+    data = load_data()
+    today = now.strftime("%Y-%m-%d")
+    # พุธ เลย 8:00 แล้ว และยังไม่ได้ส่งวันนี้
+    if now.weekday() == 2 and now.hour >= 8:
+        if data.get("last_invite_date") != today:
+            print("[Startup] Missed Wednesday invite — sending now")
+            data["last_invite_date"] = today
+            save_data(data)
+            send_wednesday_invite()
+    # พฤหัส เลย 22:00 แล้ว และยังไม่ได้ reset วันนี้
+    if now.weekday() == 3 and now.hour >= 22:
+        if data.get("last_reset_date") != today:
+            print("[Startup] Missed Thursday reset — running now")
+            data["last_reset_date"] = today
+            save_data(data)
+            reset_thursday()
+
+check_missed_jobs()
 
 @app.get("/")
 def root():
@@ -158,6 +180,22 @@ def parse_with_rules(line):
         if cmd in ["ไม่ไป", "-"]:
             return ("ไม่ไป", expand_names(name_part))
 
+    # จับรูปแบบ "ชื่อไป" / "ชื่อไม่ไป" ที่ไม่มีเว้นวรรค เช่น "ยั้ไป" "ภูไป"
+    # แต่กัน false positive เช่น "อยากไป" "ขอไป" "เอาไป"
+    NOT_NAMES = {
+        "อยาก", "ขอ", "เอา", "จะ", "ยัง", "คง", "น่าจะ", "อาจจะ",
+        "ต้องการ", "สนใจ", "ได้", "ก็", "นับ", "ด้วย", "มา", "ลอง",
+        "ของ", "ที่", "แค่", "เพียง", "ขอ"
+    }
+    if t.endswith("ไม่ไป"):
+        name_part = t[:-5].strip()
+        if name_part and name_part not in NOT_NAMES:
+            return ("ไม่ไป", expand_names(name_part))
+    elif t.endswith("ไป"):
+        name_part = t[:-2].strip()
+        if name_part and name_part not in NOT_NAMES:
+            return ("ไป", expand_names(name_part))
+
     return (None, [])
 
 def parse_with_ai(text):
@@ -165,21 +203,24 @@ def parse_with_ai(text):
         return None
 
     prompt = (
-        "วิเคราะห์ข้อความในกลุ่มไลน์ว่าเกี่ยวกับการตีแบดมินตันวันพฤหัสไหม\n"
+        "คุณคือ AI วิเคราะห์ข้อความในกลุ่มไลน์ตีแบดมินตัน\n"
         "ตอบ JSON เท่านั้น: {action: ไป/ไม่ไป/ใคร/null, names: []}\n\n"
-        "== มาตีแบด (action:ไป) ==\n"
-        "ไปด้วย / อยากไป / ไปได้นะ / ไปก็ได้ / เอาด้วย / นับด้วย / ขอร่วมด้วย\n\n"
-        "== ไม่มา (action:ไม่ไป) ==\n"
-        "ไม่ว่าง / ติดธุระ / ไปไม่ได้ / ขอพักก่อน / คงไม่ได้ไป\n"
-        "อาจจะยัง / ยังไม่แน่ / ไม่แน่ใจ / น่าจะไปไม่ได้ / คงไม่ไป\n"
-        "หมายเหตุ: คำที่แสดงความไม่แน่ใจหรือโอกาสน้อย ให้เป็น ไม่ไป\n\n"
-        "== ไม่เกี่ยว (action:null) ==\n"
-        "อาหารอร่อย / อากาศดี / ขอบคุณ / โอเค / 555\n\n"
+        "สำคัญมาก: ถ้าไม่ใช่การแจ้งลงชื่อหรือถอนชื่อชัดเจน ให้ตอบ null เสมอ\n"
+        "บทสนทนาทั่วไป การถามตอบ การพูดคุย ให้เป็น null ทั้งหมด\n\n"
+        "== ลงชื่อ (action:ไป) — ต้องแสดงเจตนาจะมาตีแบดชัดเจน ==\n"
+        "ไปด้วย / อยากไป / ไปได้นะ / เอาด้วย / นับด้วย\n\n"
+        "== ถอนชื่อ (action:ไม่ไป) — ต้องแสดงเจตนาไม่มาชัดเจน ==\n"
+        "ไม่ว่าง / ติดธุระ / ไปไม่ได้ / อาจจะยัง / คงไม่ไป\n\n"
+        "== null (บทสนทนาทั่วไป) ==\n"
+        "ขอมาลอง 1 ลูกก่อน -> null (ไม่ใช่การลงชื่อ)\n"
+        "งั้นไม่เอาละกัน ไอ้คนเสนอก็ไม่ได้มาตีด้วย -> null (บ่น ไม่ใช่ถอนชื่อ)\n"
+        "จะดีเหรอ -> null\n"
+        "ถ้าเพื่อนเห็นด้วยก็ได้หมดแหละ -> null\n"
+        "อาหารอร่อย / ขอบคุณ / โอเค / 555 -> null\n\n"
         "== มีชื่อคนอื่น ==\n"
         "พาตุ๊กไปด้วย -> {action:ไป,names:[ตุ๊ก]}\n\n"
         f"ข้อความ: {text}"
     )
-
 
     payload = json.dumps({
         "model": "claude-haiku-4-5-20251001",
