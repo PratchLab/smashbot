@@ -19,7 +19,7 @@ line_bot_api = LineBotApi(LINE_TOKEN)
 handler = WebhookHandler(LINE_SECRET)
 
 THAILAND_TZ = pytz.timezone("Asia/Bangkok")
-DATA_FILE = "/tmp/badminton_data.json"
+DATA_FILE = "/data/badminton_data.json"  # Render Disk — ไม่หายตอน deploy
 
 THAI_MONTHS = {
     1: "ม.ค.", 2: "ก.พ.", 3: "มี.ค.", 4: "เม.ย.",
@@ -132,6 +132,38 @@ def test_invite():
 def test_reset():
     reset_thursday()
     return {"status": "reset done"}
+
+@app.get("/ping")
+def ping():
+    """UptimeRobot เรียกทุก 5 นาที — ตรวจ missed jobs ด้วย"""
+    now = datetime.now(THAILAND_TZ)
+    today = now.strftime("%Y-%m-%d")
+    data = load_data()
+    triggered = []
+
+    # พุธ 8:00-9:00 ยังไม่ได้ส่ง
+    if now.weekday() == 2 and 8 <= now.hour < 9:
+        if data.get("last_invite_date") != today:
+            data["last_invite_date"] = today
+            save_data(data)
+            send_wednesday_invite()
+            triggered.append("wednesday_invite")
+            print(f"[Ping] Triggered wednesday invite at {now.strftime('%H:%M')}")
+
+    # พฤหัส 22:00-23:00 ยังไม่ได้ reset
+    if now.weekday() == 3 and 22 <= now.hour < 23:
+        if data.get("last_reset_date") != today:
+            data["last_reset_date"] = today
+            save_data(data)
+            reset_thursday()
+            triggered.append("thursday_reset")
+            print(f"[Ping] Triggered thursday reset at {now.strftime('%H:%M')}")
+
+    return {
+        "status": "ok",
+        "time_bangkok": now.strftime("%Y-%m-%d %H:%M %Z"),
+        "triggered": triggered
+    }
 
 @app.post("/webhook")
 async def webhook(request: Request):
