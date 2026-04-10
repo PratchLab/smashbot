@@ -186,13 +186,17 @@ def parse_with_rules(line):
         return (None, [])
     t_lower = t.lower()
 
-    if t_lower in ["ไป", "+", "in"]:
+    if t_lower in ["ไป", "+", "in", "going", "i'm going", "im going",
+                   "i'm in", "im in", "count me in", "i'll go", "ill go"]:
         return ("ไป", [])
     if t_lower in ["ไม่ไป", "-", "out",
                    "ไม่ไปละ", "ไม่ไปนะ", "ไม่ไปแล้ว", "ไม่ไปด้วย",
-                   "ไปไม่ได้", "ไปไม่ได้ครับ", "ไปไม่ได้ค่ะ"]:
+                   "ไปไม่ได้", "ไปไม่ได้ครับ", "ไปไม่ได้ค่ะ",
+                   "not going", "can't go", "cant go", "can't make it",
+                   "cant make it", "i'm out", "im out", "won't go"]:
         return ("ไม่ไป", [])
-    if t_lower in ["ใคร", "รายชื่อ", "list"]:
+    if t_lower in ["ใคร", "รายชื่อ", "list", "who's going", "whos going",
+                   "who's in", "whos in", "how many"]:
         return ("ใคร", [])
     if t_lower in ["เคลียร์", "clear", "reset"]:
         return ("เคลียร์", [])
@@ -235,21 +239,26 @@ def parse_with_ai(text):
         return None
 
     prompt = (
-        "คุณคือ AI วิเคราะห์ข้อความในกลุ่มไลน์ตีแบดมินตัน\n"
+        "คุณคือ AI วิเคราะห์ข้อความในกลุ่มไลน์ตีแบดมินตัน รองรับทั้งภาษาไทยและอังกฤษ\n"
         "ตอบ JSON เท่านั้น: {action: ไป/ไม่ไป/ใคร/null, names: []}\n\n"
         "สำคัญมาก: ถ้าไม่ใช่การแจ้งลงชื่อหรือถอนชื่อชัดเจน ให้ตอบ null เสมอ\n"
         "บทสนทนาทั่วไป การถามตอบ การพูดคุย ให้เป็น null ทั้งหมด\n\n"
-        "== ลงชื่อ (action:ไป) — ต้องแสดงเจตนาจะมาตีแบดชัดเจน ==\n"
-        "ไปด้วย / อยากไป / ไปได้นะ / เอาด้วย / นับด้วย\n\n"
-        "== ถอนชื่อ (action:ไม่ไป) — ต้องแสดงเจตนาไม่มาชัดเจน ==\n"
-        "ไม่ว่าง / ติดธุระ / ไปไม่ได้ / อาจจะยัง / คงไม่ไป\n\n"
-        "== null (บทสนทนาทั่วไป) ==\n"
-        "ขอมาลอง 1 ลูกก่อน -> null (ไม่ใช่การลงชื่อ)\n"
-        "งั้นไม่เอาละกัน ไอ้คนเสนอก็ไม่ได้มาตีด้วย -> null (บ่น ไม่ใช่ถอนชื่อ)\n"
-        "จะดีเหรอ -> null\n"
-        "ถ้าเพื่อนเห็นด้วยก็ได้หมดแหละ -> null\n"
+        "== ลงชื่อ (action:ไป) ==\n"
+        "ภาษาไทย: ไปด้วย / อยากไป / ไปได้นะ / เอาด้วย / นับด้วย / พร้อม\n"
+        "ภาษาอังกฤษ: I'm going / going / I'll go / count me in / i'm in / going too\n"
+        "ผสม: Parmee's going / John ไปด้วย / going นะ\n\n"
+        "== ถอนชื่อ (action:ไม่ไป) ==\n"
+        "ภาษาไทย: ไม่ว่าง / ติดธุระ / ไปไม่ได้ / อาจจะยัง / คงไม่ไป\n"
+        "ภาษาอังกฤษ: can't make it / not going / i'm out / can't go / won't be there\n\n"
+        "== ใคร (action:ใคร) ==\n"
+        "ใคร / รายชื่อ / who's going / how many / who's in\n\n"
+        "== null (ไม่เกี่ยวกับลงชื่อ) ==\n"
+        "ขอมาลอง 1 ลูกก่อน -> null\n"
+        "งั้นไม่เอาละกัน ไอ้คนเสนอก็ไม่ได้มาตีด้วย -> null\n"
+        "see you there / good game / gg -> null\n"
         "อาหารอร่อย / ขอบคุณ / โอเค / 555 -> null\n\n"
         "== มีชื่อคนอื่น ==\n"
+        "Parmee's going -> {action:ไป,names:[Parmee]}\n"
         "พาตุ๊กไปด้วย -> {action:ไป,names:[ตุ๊ก]}\n\n"
         f"ข้อความ: {text}"
     )
