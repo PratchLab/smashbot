@@ -32,7 +32,7 @@ def load_data():
         with open(DATA_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"players": [], "group_ids": [], "last_invite_date": "", "last_reset_date": ""}
+        return {"players": [], "group_ids": [], "last_invite_date": "", "last_reset_date": "", "holidays": []}
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
@@ -46,16 +46,33 @@ def get_next_thursday():
 
 def send_wednesday_invite():
     data = load_data()
-    msg = ("🏸 สวัสดีตอนเช้า!\n"
-           "พรุ่งนี้พฤหัสแล้ว มาตีแบดกันนะ 💪\n\n"
-           "พิมพ์ ไป → ลงชื่อตัวเอง\n"
-           "พิมพ์ ตุ๊ก ไป หรือ ไป ตุ๊ก → ลงชื่อแทน\n"
-           "พิมพ์ AA,BB ไป → ลงหลายคนพร้อมกัน\n"
-           "พิมพ์ ใคร → ดูรายชื่อ")
+    # เช็คว่าพฤหัสหน้าเป็นวันหยุดไหม
+    now = datetime.now(THAILAND_TZ)
+    days_ahead = (3 - now.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    next_thu = now + timedelta(days=days_ahead)
+    next_thu_str = next_thu.strftime("%Y-%m-%d")
+    thu_label = f"{next_thu.day} {THAI_MONTHS[next_thu.month]}"
+
+    holidays = data.get("holidays", [])
+    holiday_info = next((h for h in holidays if h["date"] == next_thu_str), None)
+
+    if holiday_info:
+        msg = (f"🚫 สัปดาห์นี้ไม่มีตีแบดนะครับ\n"
+               f"วันพฤหัส {thu_label} หยุด: {holiday_info['reason']}\n\n"
+               f"พบกันสัปดาห์หน้า! 🏸")
+    else:
+        msg = ("🏸 สวัสดีตอนเช้า!\n"
+               f"พรุ่งนี้พฤหัส {thu_label} มาตีแบดกันนะ 💪\n\n"
+               "พิมพ์ ไป → ลงชื่อตัวเอง\n"
+               "พิมพ์ ตุ๊ก ไป หรือ ไป ตุ๊ก → ลงชื่อแทน\n"
+               "พิมพ์ AA,BB ไป → ลงหลายคนพร้อมกัน\n"
+               "พิมพ์ ใคร → ดูรายชื่อ")
     for gid in data["group_ids"]:
         try:
             line_bot_api.push_message(gid, TextSendMessage(text=msg))
-            print(f"[Invite] Sent to {gid}")
+            print(f"[Invite] Sent to {gid} (holiday={bool(holiday_info)})")
         except Exception as e:
             print(f"[Invite] Error {gid}: {e}")
 
@@ -123,6 +140,12 @@ def view_data():
         "next_thursday": get_next_thursday()
     }
 
+@app.get("/holidays")
+def view_holidays():
+    data = load_data()
+    holidays = sorted(data.get("holidays", []), key=lambda h: h["date"])
+    return {"holidays": holidays, "total": len(holidays)}
+
 @app.get("/test/invite")
 def test_invite():
     send_wednesday_invite()
@@ -176,6 +199,32 @@ async def webhook(request: Request):
     return "OK"
 
 # ==================== PARSE FUNCTIONS ====================
+
+def parse_date(text):
+    """แปลง 16/4 หรือ 16/04 หรือ 16/4/68 เป็น YYYY-MM-DD"""
+    import re
+    now = datetime.now(THAILAND_TZ)
+    # รูปแบบ dd/mm หรือ dd/mm/yy หรือ dd/mm/yyyy
+    m = re.match(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", text.strip())
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        year_raw = m.group(3)
+        if year_raw:
+            y = int(year_raw)
+            # พ.ศ. -> ค.ศ.
+            if y > 2500:
+                y -= 543
+            elif y < 100:
+                y += 2000
+        else:
+            y = now.year
+        try:
+            from datetime import date
+            d = date(y, month, day)
+            return d.strftime("%Y-%m-%d"), f"{day} {THAI_MONTHS[month]} {y+543}"
+        except:
+            pass
+    return None, None
 
 def expand_names(raw):
     return [n.strip() for n in raw.split(",") if n.strip()]
@@ -385,6 +434,56 @@ def handle_message(event):
         return
 
     first_action = valid[0][0]
+    first_text = valid[0][1] if len(valid[0]) > 1 else ""
+
+    # คำสั่งวันหยุด — เช็คจาก raw text ก่อน
+    raw_lower = text.strip().lower()
+
+    if raw_lower == "วันหยุด":
+        holidays = sorted(data.get("holidays", []), key=lambda h: h["date"])
+        if holidays:
+            lines = [f"{i+1}. พฤหัส {h['label']} — {h['reason']}" for i, h in enumerate(holidays)]
+            reply = "📅 รายการวันหยุด:\n" + "\n".join(lines)
+        else:
+            reply = "ไม่มีวันหยุดที่ตั้งไว้ครับ"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        return
+
+    if raw_lower.startswith("หยุด "):
+        parts = text.strip().split(" ", 2)
+        date_str = parts[1] if len(parts) > 1 else ""
+        reason = parts[2] if len(parts) > 2 else "วันหยุด"
+        date_iso, date_label = parse_date(date_str)
+        if date_iso:
+            holidays = data.get("holidays", [])
+            if not any(h["date"] == date_iso for h in holidays):
+                holidays.append({"date": date_iso, "label": date_label, "reason": reason})
+                data["holidays"] = sorted(holidays, key=lambda h: h["date"])
+                save_data(data)
+                reply = f"✅ เพิ่มวันหยุดแล้ว\nพฤหัส {date_label} — {reason}"
+            else:
+                reply = f"⚠️ {date_label} มีในรายการแล้ว"
+        else:
+            reply = "รูปแบบวันที่ไม่ถูกต้อง เช่น หยุด 16/4 พรหมลิขิต"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        return
+
+    if raw_lower.startswith("ยกเลิกหยุด "):
+        parts = text.strip().split(" ", 1)
+        date_str = parts[1] if len(parts) > 1 else ""
+        date_iso, date_label = parse_date(date_str)
+        if date_iso:
+            before = len(data.get("holidays", []))
+            data["holidays"] = [h for h in data.get("holidays", []) if h["date"] != date_iso]
+            if len(data["holidays"]) < before:
+                save_data(data)
+                reply = f"✅ ลบวันหยุด {date_label} แล้ว"
+            else:
+                reply = f"ไม่พบวันหยุด {date_label} ในรายการ"
+        else:
+            reply = "รูปแบบวันที่ไม่ถูกต้อง เช่น ยกเลิกหยุด 16/4"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        return
 
     if first_action == "ใคร":
         players = data["players"]
