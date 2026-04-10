@@ -427,16 +427,8 @@ def handle_message(event):
         sender_name = "ไม่ทราบชื่อ"
 
     thu_label = get_next_thursday()
-    lines = text.splitlines()
-    valid = [(a, n) for a, n in [parse_single_line(l) for l in lines] if a is not None]
 
-    if not valid:
-        return
-
-    first_action = valid[0][0]
-    first_text = valid[0][1] if len(valid[0]) > 1 else ""
-
-    # คำสั่งวันหยุด — เช็คจาก raw text ก่อน
+    # ===== เช็คคำสั่งวันหยุดก่อนเลย (ก่อน AI parse) =====
     raw_lower = text.strip().lower()
 
     if raw_lower == "วันหยุด":
@@ -484,6 +476,15 @@ def handle_message(event):
             reply = "รูปแบบวันที่ไม่ถูกต้อง เช่น ยกเลิกหยุด 16/4"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
         return
+
+    # ===== ต่อจากนี้ parse คำสั่งทั่วไป =====
+    lines = text.splitlines()
+    valid = [(a, n) for a, n in [parse_single_line(l) for l in lines] if a is not None]
+
+    if not valid:
+        return
+
+    first_action = valid[0][0]
 
     if first_action == "ใคร":
         players = data["players"]
