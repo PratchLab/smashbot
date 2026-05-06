@@ -8,6 +8,7 @@ import pytz
 from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
+import re
 
 app = FastAPI()
 
@@ -272,6 +273,29 @@ def parse_with_rules(line):
         "ต้องการ", "สนใจ", "ได้", "ก็", "นับ", "ด้วย", "มา", "ลอง",
         "ของ", "ที่", "แค่", "เพียง", "ขอ"
     }
+    # จับรูปแบบ "XX% ไป" หรือ "ชื่อ XX% ไป" — XX% คือความน่าจะเป็น ไม่ใช่ชื่อ
+    # เช่น "49% ไป" → ลงชื่อตัวเอง (49%)
+    # เช่น "สมชาย 80% ไป" → ลงชื่อ สมชาย (80%)
+    pct_go = re.match(r"^(.*?)\s*(\d+%)\s*ไป$", t)
+    if pct_go:
+        prefix = pct_go.group(1).strip()
+        pct = pct_go.group(2)
+        if prefix and prefix not in NOT_NAMES:
+            # มีชื่อนำหน้า เช่น "สมชาย 80% ไป"
+            return ("ไป_pct", [prefix, pct])
+        else:
+            # ไม่มีชื่อ หรือชื่อเป็น keyword เช่น "49% ไป"
+            return ("ไป_pct", [None, pct])
+
+    pct_nogo = re.match(r"^(.*?)\s*(\d+%)\s*ไม่ไป$", t)
+    if pct_nogo:
+        prefix = pct_nogo.group(1).strip()
+        pct = pct_nogo.group(2)
+        if prefix and prefix not in NOT_NAMES:
+            return ("ไม่ไป_pct", [prefix, pct])
+        else:
+            return ("ไม่ไป_pct", [None, pct])
+
     if t.endswith("ไม่ไป"):
         name_part = t[:-5].strip()
         if name_part and name_part not in NOT_NAMES:
@@ -372,24 +396,55 @@ def process_action(action, names, user_id, sender_name, data):
     added, removed, already, not_found = [], [], [], []
     players = data["players"]
 
-    if action == "ไป":
-        targets = names if names else [None]
-        for name in targets:
-            display = name if name else sender_name
-            pid = f"proxy_{display}" if name else user_id
-            if not any(p["name"].lower() == display.lower() for p in players):
+    if action in ["ไป", "ไป_pct"]:
+        if action == "ไป_pct":
+            # names = [ชื่อ_หรือ_None, "%"]
+            proxy_name = names[0] if names else None
+            pct = names[1] if len(names) > 1 else ""
+            raw_display = proxy_name if proxy_name else sender_name
+            display = f"{raw_display} ({pct})"
+            pid = f"proxy_{display}" if proxy_name else user_id
+            targets = [(display, pid)]
+        else:
+            targets_raw = names if names else [None]
+            targets = []
+            for name in targets_raw:
+                display = name if name else sender_name
+                pid = f"proxy_{display}" if name else user_id
+                targets.append((display, pid))
+
+        for display, pid in targets:
+            # เช็คชื่อ base (ไม่รวม %) ด้วยเพื่อกัน duplicate
+            base_name = re.sub(r"\s*\(\d+%\)$", "", display).strip()
+            if not any(
+                p["name"].lower() == display.lower() or
+                re.sub(r"\s*\(\d+%\)$", "", p["name"]).strip().lower() == base_name.lower()
+                for p in players
+            ):
                 players.append({"id": pid, "name": display})
                 added.append(display)
             else:
                 already.append(display)
 
-    elif action == "ไม่ไป":
-        targets = names if names else [None]
-        for name in targets:
+    elif action in ["ไม่ไป", "ไม่ไป_pct"]:
+        if action == "ไม่ไป_pct":
+            proxy_name = names[0] if names else None
+            pct = names[1] if len(names) > 1 else ""
+            raw_display = proxy_name if proxy_name else sender_name
+            targets_raw = [proxy_name]  # ใช้ชื่อเดิมในการค้นหา
+        else:
+            targets_raw = names if names else [None]
+
+        for name in targets_raw:
             display = name if name else sender_name
             before = len(data["players"])
             if name:
-                data["players"] = [p for p in data["players"] if p["name"].lower() != display.lower()]
+                # ลบทั้งชื่อปกติและชื่อที่มี (%) ต่อท้าย
+                data["players"] = [
+                    p for p in data["players"]
+                    if re.sub(r"\s*\(\d+%\)$", "", p["name"]).strip().lower() != display.lower()
+                    and p["name"].lower() != display.lower()
+                ]
             else:
                 data["players"] = [p for p in data["players"] if p["id"] != user_id]
             if len(data["players"]) < before:
