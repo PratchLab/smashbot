@@ -273,10 +273,26 @@ def parse_with_rules(line):
         "ต้องการ", "สนใจ", "ได้", "ก็", "นับ", "ด้วย", "มา", "ลอง",
         "ของ", "ที่", "แค่", "เพียง", "ขอ"
     }
+    # แปลง X/X เป็น % โดย:
+    # - ถ้า a == b (เช่น 50/50, 1/1) = 50% (แปลว่า "ครึ่งๆ")
+    # - ถ้า a != b (เช่น 1/3, 2/3) = คำนวณจริง
+    def fraction_to_pct(s):
+        m = re.match(r"^(\d+)/(\d+)$", s)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if b > 0:
+                if a == b:
+                    return "50%"  # 50/50 = โอกาสครึ่งๆ
+                return f"{round(a*100/b)}%"
+        return s
+
+    # แทนที่ทุก X/X ใน t ด้วย %
+    t_normalized = re.sub(r"\b(\d+)/(\d+)\b", lambda m: fraction_to_pct(m.group(0)), t)
+
     # จับรูปแบบ "XX% ไป" หรือ "ชื่อ XX% ไป" — XX% คือความน่าจะเป็น ไม่ใช่ชื่อ
     # เช่น "49% ไป" → ลงชื่อตัวเอง (49%)
     # เช่น "สมชาย 80% ไป" → ลงชื่อ สมชาย (80%)
-    pct_go = re.match(r"^(.*?)\s*(\d+%)\s*ไป$", t)
+    pct_go = re.match(r"^(.*?)\s*(\d+%)\s*ไป$", t_normalized)
     if pct_go:
         prefix = pct_go.group(1).strip()
         pct = pct_go.group(2)
@@ -287,7 +303,7 @@ def parse_with_rules(line):
             # ไม่มีชื่อ หรือชื่อเป็น keyword เช่น "49% ไป"
             return ("ไป_pct", [None, pct])
 
-    pct_nogo = re.match(r"^(.*?)\s*(\d+%)\s*ไม่ไป$", t)
+    pct_nogo = re.match(r"^(.*?)\s*(\d+%)\s*ไม่ไป$", t_normalized)
     if pct_nogo:
         prefix = pct_nogo.group(1).strip()
         pct = pct_nogo.group(2)
