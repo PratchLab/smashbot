@@ -30,14 +30,23 @@ THAI_MONTHS = {
 
 def load_data():
     try:
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
+        return json.load(open(DATA_FILE, "r"))
     except:
-        return {"players": [], "group_ids": [], "last_invite_date": "", "last_reset_date": "", "holidays": []}
+        return {
+            "players": [],
+            "group_ids": [],
+            "last_invite_date": "",
+            "last_reset_date": "",
+            "signup_open": False,
+            "holidays": []
+        }
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, ensure_ascii=False)
+
+def is_registration_open(data):
+    return data.get("signup_open", False)
 
 def get_next_thursday():
     now = datetime.now(THAILAND_TZ)
@@ -77,10 +86,16 @@ def send_wednesday_invite():
         except Exception as e:
             print(f"[Invite] Error {gid}: {e}")
 
+    data["signup_open"] = True
+    data["last_invite_date"] = now.strftime("%Y-%m-%d")
+    save_data(data)
+
 def reset_thursday():
     data = load_data()
     count = len(data["players"])
     data["players"] = []
+    data["signup_open"] = False
+    data["last_reset_date"] = datetime.now(THAILAND_TZ).strftime("%Y-%m-%d")
     save_data(data)
     msg = f"🗑️ ล้างรายชื่อแล้ว ({count} คน)\nพบกันใหม่สัปดาห์หน้านะ! 🏸"
     for gid in data["group_ids"]:
@@ -105,15 +120,11 @@ def check_missed_jobs():
     if now.weekday() == 2 and now.hour >= 8:
         if data.get("last_invite_date") != today:
             print("[Startup] Missed Wednesday invite — sending now")
-            data["last_invite_date"] = today
-            save_data(data)
             send_wednesday_invite()
     # พฤหัส เลย 22:00 แล้ว และยังไม่ได้ reset วันนี้
     if now.weekday() == 3 and now.hour >= 22:
         if data.get("last_reset_date") != today:
             print("[Startup] Missed Thursday reset — running now")
-            data["last_reset_date"] = today
-            save_data(data)
             reset_thursday()
 
 check_missed_jobs()
@@ -126,6 +137,7 @@ def root():
     return {
         "status": "running",
         "players": len(data["players"]),
+        "signup_open": is_registration_open(data),
         "time_bangkok": now.strftime("%Y-%m-%d %H:%M %Z"),
         "scheduler_jobs": jobs,
         "ai_enabled": bool(ANTHROPIC_API_KEY)
@@ -168,8 +180,6 @@ def ping():
     # พุธ 8:00-9:00 ยังไม่ได้ส่ง
     if now.weekday() == 2 and 8 <= now.hour < 9:
         if data.get("last_invite_date") != today:
-            data["last_invite_date"] = today
-            save_data(data)
             send_wednesday_invite()
             triggered.append("wednesday_invite")
             print(f"[Ping] Triggered wednesday invite at {now.strftime('%H:%M')}")
@@ -177,8 +187,6 @@ def ping():
     # พฤหัส 22:00-23:00 ยังไม่ได้ reset
     if now.weekday() == 3 and 22 <= now.hour < 23:
         if data.get("last_reset_date") != today:
-            data["last_reset_date"] = today
-            save_data(data)
             reset_thursday()
             triggered.append("thursday_reset")
             print(f"[Ping] Triggered thursday reset at {now.strftime('%H:%M')}")
@@ -554,6 +562,15 @@ def handle_message(event):
 
     if not valid:
         return
+
+    if any(action in ["ไป", "ไม่ไป", "ไป_pct", "ไม่ไป_pct"] for action, _ in valid):
+        if not is_registration_open(data):
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=("🚫 ตอนนี้ปิดรับลงชื่อแล้ว\n"
+                                      "รับลงชื่อเฉพาะตั้งแต่พุธ 08:00 หลังข้อความเชิญ ถึงพฤหัส 22:00 หลังรีเซ็ต"))
+            )
+            return
 
     first_action = valid[0][0]
 
